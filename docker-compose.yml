@@ -1,0 +1,37 @@
+services:
+  app:
+    container_name: meteo-iot-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV}
+      HOST: ${HOST}
+      PORT: ${APP_PORT}
+      MYSQL_EMBEDDED: ${MYSQL_EMBEDDED}
+      MYSQL_EMBEDDED_VERSION: ${MYSQL_EMBEDDED_VERSION}
+      MYSQL_EMBEDDED_DBNAME: ${MYSQL_EMBEDDED_DBNAME}
+      MYSQL_EMBEDDED_PORT: ${MYSQL_EMBEDDED_PORT}
+      MYSQL_HOST: ${MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+    networks:
+      - traefik-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-network
+      - traefik.http.routers.meteo-iot.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.meteo-iot.entrypoints=websecure
+      - traefik.http.routers.meteo-iot.tls.certresolver=letsencrypt
+      - traefik.http.services.meteo-iot.loadbalancer.server.port=${APP_PORT}
+
+networks:
+  traefik-network:
+    external: true
