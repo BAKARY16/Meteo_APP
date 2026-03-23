@@ -6,9 +6,12 @@ const fs = require('fs');
 const { WebSocketServer } = require('ws');
 const { z } = require('zod');
 const { config } = require('./config');
+const mqttService = require('./services/mqttService');
 const {
   acknowledgeAlert,
   createDatabase,
+  deleteAlert,
+  deleteNode,
   getAIMetrics,
   getDashboardSummary,
   getLastSensorReadingForNode,
@@ -29,8 +32,9 @@ const {
   updateNodeStatuses,
   updateSensorData,
 } = require('./db');
-const { buildAlertsFromReading, calculateAnomalyScore } = require('./generator');
+const { buildAlertsFromReading, calculateAnomalyScore, generateSensorReading } = require('./generator');
 const aiEngine = require('./ai-engine');
+const { enrichReading, weatherCondition, computeFloodRisk, computeStormRisk, computeOverallRisk, computeAQI, aqiCategory, riskLabel } = require('./weather');
 
 const app = express();
 const server = http.createServer(app);
@@ -207,12 +211,16 @@ async function ingestReading(readingPayload, source = 'api', shouldBroadcast = t
     if (created) createdAlerts.push(created);
   }
 
+  // Enrichir avec les champs calculés côté backend avant broadcast
+  const enriched = enrichReading(insertedReading, previous);
+  enriched.ai_analysis = insertedReading.ai_analysis;
+
   if (shouldBroadcast) {
-    broadcast('sensor_data', insertedReading);
+    broadcast('sensor_data', enriched);
     createdAlerts.forEach((alert) => broadcast('alert', alert));
   }
 
-  return { insertedReading, createdAlerts };
+  return { insertedReading: enriched, createdAlerts };
 }
 
 // ─── Clear all sensor_data, alerts, predictions ────────────────────────────
@@ -241,6 +249,106 @@ app.get('/api/nodes', async (_req, res) => {
   sendJson(res, 200, { data: await listNodes(db) });
 });
 
+// ─── Liste complète des 10 districts/régions de Côte d'Ivoire ──────────────
+const CI_REGIONS = [
+  { name: 'Lagunes',            zone: 'Sud',          order: 1 },
+  { name: 'Bas-Sassandra',      zone: 'Sud-Ouest',    order: 2 },
+  { name: 'Comoé',              zone: 'Est',           order: 3 },
+  { name: 'Sassandra-Marahoué', zone: 'Centre-Ouest', order: 4 },
+  { name: 'Lacs',               zone: 'Centre',        order: 5 },
+  { name: 'Vallée du Bandama',  zone: 'Centre-Nord',  order: 6 },
+  { name: 'Montagnes',          zone: 'Ouest',         order: 7 },
+  { name: 'Zanzan',             zone: 'Nord-Est',      order: 8 },
+  { name: 'Savanes',            zone: 'Nord',          order: 9 },
+  { name: 'Denguélé',           zone: 'Nord-Ouest',    order: 10 },
+];
+const CI_REGION_ORDER = Object.fromEntries(CI_REGIONS.map((r) => [r.name, r.order]));
+
+// ─── Résumé météo par région ────────────────────────────────────────────────
+app.get('/api/regions', async (_req, res) => {
+  await updateNodeStatuses(db);
+  const nodes = await listNodes(db);
+  const latestRows = await getLatestSensorDataByNode(db);
+
+  // Index latest data by node_id, enrichie avec les calculs backend
+  const latestMap = {};
+  latestRows.forEach((r) => { latestMap[r.node_id] = enrichReading(r); });
+
+  // Group nodes by region
+  const regionMap = {};
+  for (const node of nodes) {
+    const key = node.region || node.location || 'Inconnue';
+    if (!regionMap[key]) regionMap[key] = { region: key, nodes: [] };
+    regionMap[key].nodes.push({ ...node, latest: latestMap[node.id] || null });
+  }
+
+  // S'assurer que chaque région CI connue apparaît même sans station
+  for (const r of CI_REGIONS) {
+    if (!regionMap[r.name]) regionMap[r.name] = { region: r.name, nodes: [] };
+  }
+
+  // Compute per-region aggregates
+  const regions = Object.values(regionMap).map((r) => {
+    const withData = r.nodes.filter((n) => n.latest);
+    const temps    = withData.map((n) => n.latest.temperature).filter((v) => v != null);
+    const hums     = withData.map((n) => n.latest.humidity).filter((v) => v != null);
+    const pressures = withData.map((n) => n.latest.pressure).filter((v) => v != null);
+    const winds    = withData.map((n) => n.latest.wind_speed).filter((v) => v != null);
+    const rains    = withData.map((n) => n.latest.rain_level).filter((v) => v != null);
+
+    const avg = (arr) => arr.length ? Number((arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1)) : null;
+    const max = (arr) => arr.length ? Math.max(...arr) : null;
+
+    // Calculs de risque côté backend à partir des données agrégées
+    let condition_label = null;
+    let flood_risk = null;
+    let storm_risk = null;
+    let overall_risk = null;
+    let risk_label_str = null;
+    let aqi = null;
+
+    if (withData.length > 0) {
+      // On calcule les risques sur un "reading représentatif" de la région (valeurs moyennes)
+      const refReading = {
+        temperature: avg(temps),
+        humidity: avg(hums),
+        pressure: avg(pressures),
+        wind_speed: avg(winds),
+        rain_level: max(rains) ?? 0,
+        anomaly_score: avg(withData.map((n) => n.latest.anomaly_score).filter((v) => v != null)) ?? 0,
+      };
+      const enriched = enrichReading(refReading);
+      condition_label = enriched.condition_label;
+      flood_risk = enriched.flood_risk;
+      storm_risk = enriched.storm_risk;
+      overall_risk = enriched.overall_risk;
+      risk_label_str = enriched.risk_label;
+      aqi = enriched.aqi;
+    }
+
+    return {
+      region: r.region,
+      node_count: r.nodes.length,
+      online_count: r.nodes.filter((n) => n.status === 'online').length,
+      avg_temperature: avg(temps),
+      avg_humidity: avg(hums),
+      avg_pressure: avg(pressures),
+      max_wind_speed: max(winds),
+      max_rain_level: max(rains),
+      condition_label,
+      flood_risk,
+      storm_risk,
+      overall_risk,
+      risk_label: risk_label_str,
+      aqi,
+      nodes: r.nodes,
+    };
+  });
+
+  regions.sort((a, b) => (CI_REGION_ORDER[a.region] || 99) - (CI_REGION_ORDER[b.region] || 99));
+  sendJson(res, 200, { data: regions });
+});
+
 app.get('/api/nodes/:id', async (req, res) => {
   await updateNodeStatuses(db);
   const node = await getNodeById(db, req.params.id);
@@ -248,7 +356,7 @@ app.get('/api/nodes/:id', async (req, res) => {
     return sendJson(res, 404, { error: 'Node not found' });
   }
   const latest = await getLastSensorReadingForNode(db, node.id);
-  return sendJson(res, 200, { data: { ...node, latest_data: latest || null } });
+  return sendJson(res, 200, { data: { ...node, latest_data: latest ? enrichReading(latest) : null } });
 });
 
 const updateNodeSchema = z.object({
@@ -277,6 +385,15 @@ app.patch('/api/nodes/:id', async (req, res) => {
   return sendJson(res, 200, { message: 'Node updated', data: updated });
 });
 
+app.delete('/api/nodes/:id', async (req, res) => {
+  const node = await getNodeById(db, req.params.id);
+  if (!node) return sendJson(res, 404, { error: 'Node not found' });
+  const deleted = await deleteNode(db, req.params.id);
+  if (!deleted) return sendJson(res, 500, { error: 'Delete failed' });
+  broadcast('node_deleted', { id: req.params.id });
+  return sendJson(res, 200, { message: 'Node deleted', id: req.params.id });
+});
+
 app.get('/api/sensor-data', async (req, res) => {
   const data = await listSensorData(db, {
     node_id: req.query.node_id,
@@ -290,7 +407,7 @@ app.get('/api/sensor-data', async (req, res) => {
 
 app.get('/api/sensor-data/latest', async (_req, res) => {
   const data = await getLatestSensorDataByNode(db);
-  sendJson(res, 200, { data });
+  sendJson(res, 200, { data: data.map((r) => enrichReading(r)) });
 });
 
 app.get('/api/sensor-data/stats', async (req, res) => {
@@ -530,6 +647,15 @@ app.patch('/api/alerts/:id/acknowledge', async (req, res) => {
   return sendJson(res, 200, { message: 'Alert acknowledged', data: alert });
 });
 
+app.delete('/api/alerts/:id', async (req, res) => {
+  const deleted = await deleteAlert(db, req.params.id);
+  if (!deleted) {
+    return sendJson(res, 404, { error: 'Alert not found' });
+  }
+  broadcast('alert_deleted', { id: Number(req.params.id) });
+  return sendJson(res, 200, { message: 'Alert deleted' });
+});
+
 app.get('/api/anomalies', async (req, res) => {
   const data = await listAnomalies(db, {
     node_id: req.query.node_id,
@@ -545,8 +671,31 @@ app.get('/api/predictions', async (_req, res) => {
 
 app.get('/api/dashboard/summary', async (_req, res) => {
   await updateNodeStatuses(db);
-  const data = await getDashboardSummary(db);
-  sendJson(res, 200, { data });
+  const summary = await getDashboardSummary(db);
+
+  // Enrichir le résumé avec les risques calculés côté backend
+  const latestAvg = summary.latest || {};
+  if (latestAvg.avg_temperature != null) {
+    const refReading = {
+      temperature: latestAvg.avg_temperature,
+      humidity: latestAvg.avg_humidity,
+      pressure: latestAvg.avg_pressure,
+      wind_speed: latestAvg.avg_wind_speed,
+      rain_level: latestAvg.avg_rain_level ?? 0,
+      anomaly_score: 0,
+    };
+    const enriched = enrichReading(refReading);
+    summary.condition_label = enriched.condition_label;
+    summary.condition_severity = enriched.condition_severity;
+    summary.flood_risk = enriched.flood_risk;
+    summary.storm_risk = enriched.storm_risk;
+    summary.overall_risk = enriched.overall_risk;
+    summary.risk_label = enriched.risk_label;
+    summary.aqi = enriched.aqi;
+    summary.aqi_label = enriched.aqi_label;
+  }
+
+  sendJson(res, 200, { data: summary });
 });
 
 app.get('/api/ai/metrics', async (_req, res) => {
@@ -806,8 +955,36 @@ app.use((error, _req, res, _next) => {
 
 wsManager.init(wss);
 
+async function seedHistoricalDataIfNeeded() {
+  const [[{ cnt }]] = await db.query('SELECT COUNT(*) AS cnt FROM sensor_data');
+  if (Number(cnt) > 0) return; // Des données existent déjà
+
+  const STEP_SEC = 15 * 60;   // lecture toutes les 15 minutes
+  const HIST_SEC = 24 * 3600; // 24 heures d'historique
+  const now      = Math.floor(Date.now() / 1000);
+  const nodes    = await listNodes(db);
+  const prevByNode = {};
+  let total = 0;
+
+  for (let t = now - HIST_SEC; t < now; t += STEP_SEC) {
+    for (const node of nodes) {
+      const r = generateSensorReading(node.id, t, prevByNode[node.id] || null);
+      prevByNode[node.id] = r;
+      await insertSensorData(db, r, 'seed');
+      total++;
+    }
+  }
+  console.log(`[SEED] ${total} lectures historiques générées (${nodes.length} stations × 24h/15min)`);
+  await refreshPredictions(db);
+}
+
 async function bootstrap() {
   db = await createDatabase(config.mysql);
+
+  // ── MQTT : connexion au broker pour recevoir les données ESP32 ──────────
+  if (process.env.MQTT_ENABLED !== 'false') {
+    mqttService.init({ db, ingestReading, broadcast, updateNode, insertAlert });
+  }
 
   server.listen(config.port, config.host, () => {
     console.log(`Meteo backend running on http://${config.host}:${config.port}`);
@@ -819,6 +996,38 @@ async function bootstrap() {
       console.log(`Frontend: dist not found — use Vite dev server or run "npm run build" in frontend/`);
     }
   });
+
+  // ── Données historiques (premier démarrage sans données) ────
+  await seedHistoricalDataIfNeeded();
+
+  // ── Simulation des capteurs ─────────────────────────────────
+  // Actif par défaut (30s). Désactiver avec SIMULATION_INTERVAL_MS=0
+  const SIM_MS = parseInt(process.env.SIMULATION_INTERVAL_MS ?? '30000');
+  if (SIM_MS > 0) {
+    const prevReadings = {};
+    const runSim = async () => {
+      try {
+        const nodes = await listNodes(db);
+        for (const node of nodes) {
+          const reading = generateSensorReading(
+            node.id,
+            Math.floor(Date.now() / 1000),
+            prevReadings[node.id] || null
+          );
+          prevReadings[node.id] = reading;
+          await ingestReading(reading, 'simulator');
+        }
+        // Rafraîchir les prédictions de temps en temps (~1 cycle sur 10)
+        if (Math.random() < 0.1) await refreshPredictions(db).catch(() => {});
+      } catch (e) {
+        console.error('[SIM] Erreur:', e.message);
+      }
+    };
+    // Première lecture immédiate au démarrage
+    await runSim();
+    setInterval(runSim, SIM_MS);
+    console.log(`[SIM] Simulation activée — intervalle ${SIM_MS / 1000}s`);
+  }
 }
 
 bootstrap().catch((error) => {
