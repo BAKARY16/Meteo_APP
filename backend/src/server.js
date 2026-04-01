@@ -6,6 +6,7 @@ const fs = require('fs');
 const { WebSocketServer } = require('ws');
 const { z } = require('zod');
 const { config } = require('./config');
+const { getCiGeography, listCiRegions, listCitiesForRegion } = require('./geography');
 const mqttService = require('./services/mqttService');
 const {
   acknowledgeAlert,
@@ -244,6 +245,19 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
+app.get('/api/geography/ci', (_req, res) => {
+  sendJson(res, 200, { data: getCiGeography() });
+});
+
+app.get('/api/geography/regions', (_req, res) => {
+  sendJson(res, 200, { data: listCiRegions() });
+});
+
+app.get('/api/geography/regions/:region/cities', (req, res) => {
+  const region = req.params.region || '';
+  sendJson(res, 200, { data: listCitiesForRegion(region) });
+});
+
 app.get('/api/nodes', async (_req, res) => {
   await updateNodeStatuses(db);
   sendJson(res, 200, { data: await listNodes(db) });
@@ -361,6 +375,7 @@ app.get('/api/nodes/:id', async (req, res) => {
 
 const updateNodeSchema = z.object({
   name: z.string().min(1).optional(),
+  region: z.string().optional(),
   location: z.string().optional(),
   latitude: z.number().min(-90).max(90).optional(),
   longitude: z.number().min(-180).max(180).optional(),
@@ -501,6 +516,7 @@ app.post('/api/sensors/register', async (req, res) => {
   const schema = z.object({
     node_id: z.string().min(1),
     name: z.string().min(1),
+    region: z.string().optional(),
     location: z.string().optional(),
     latitude: z.number().optional(),
     longitude: z.number().optional(),
@@ -510,7 +526,7 @@ app.post('/api/sensors/register', async (req, res) => {
   if (!parsed.success) {
     return sendJson(res, 400, { error: 'Invalid payload', details: parsed.error.issues });
   }
-  const { node_id, name, location, latitude, longitude, firmware_version } = parsed.data;
+  const { node_id, name, region, location, latitude, longitude, firmware_version } = parsed.data;
   const now = Math.floor(Date.now() / 1000);
   try {
     const existing = await getNodeById(db, node_id);
@@ -518,9 +534,9 @@ app.post('/api/sensors/register', async (req, res) => {
       return sendJson(res, 409, { error: 'Node already exists', data: existing });
     }
     await db.query(
-      `INSERT INTO nodes (id, name, location, latitude, longitude, status, firmware_version, last_seen, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?)`,
-      [node_id, name, location || null, latitude || null, longitude || null, firmware_version || 'physical-1.0', now, now, now],
+      `INSERT INTO nodes (id, name, location, region, latitude, longitude, status, firmware_version, last_seen, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?)`,
+      [node_id, name, location || null, region || null, latitude || null, longitude || null, firmware_version || 'physical-1.0', now, now, now],
     );
     const node = await getNodeById(db, node_id);
     broadcast('node_registered', node);

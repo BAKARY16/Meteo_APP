@@ -117,8 +117,10 @@ function RiskGauge({ label, score, icon }) {
 // ---------- DashboardPage ----------
 export default function DashboardPage({ liveData, history, alerts = [], summary, nodes = [], onNav }) {
   // Pick primary station data
-  const primaryNode = nodes.find((n) => n.status === 'online') || nodes[0];
-  const latest = liveData || (primaryNode ? null : null);
+  const fallbackPrimaryNode = nodes.find((n) => n.status === 'online') || nodes[0];
+  const latest = liveData || (fallbackPrimaryNode ? null : null);
+  const isNetworkOverview = latest?.condition_label === 'Synthèse réseau';
+  const primaryNode = isNetworkOverview ? null : fallbackPrimaryNode;
 
   // Collect all history data merged for primary node
   const grouped = groupByNode(history || []);
@@ -174,7 +176,7 @@ export default function DashboardPage({ liveData, history, alerts = [], summary,
         <div className="page-header-left">
           <div className="page-title">Tableau de bord</div>
           <div className="page-subtitle">
-            {onlineNodes} / {nodes.length} stations en ligne
+            {onlineNodes} / {nodes.length} stations en ligne · aperçu général réseau
             {latest && <> · Condition : <strong>{condition.label}</strong></>}
           </div>
         </div>
@@ -253,7 +255,7 @@ export default function DashboardPage({ liveData, history, alerts = [], summary,
           {/* Station statuses */}
           <div className="card">
             <div className="card-header">
-              <span className="card-title">Stations IoT</span>
+              <span className="card-title">Stations</span>
               <span className="badge badge-blue" style={{ fontFamily: 'var(--font-mono)' }}>
                 {onlineNodes}/{nodes.length}
               </span>

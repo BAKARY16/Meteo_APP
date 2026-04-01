@@ -7,9 +7,7 @@ import ForecastPage     from './pages/ForecastPage';
 import AlertsPage       from './pages/AlertsPage';
 import AirQualityPage   from './pages/AirQualityPage';
 import HistoryPage      from './pages/HistoryPage';
-import StationsPage     from './pages/StationsPage';
 import MapPage          from './pages/MapPage';
-import RegionsPage      from './pages/RegionsPage';
 import ComparisonPage   from './pages/ComparisonPage';
 import { fetchApi, groupByNode } from './utils/helpers';
 
@@ -24,6 +22,57 @@ const WS_URL =
     const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${loc.host}/ws`;
   })();
+
+const DELETED_ALERTS_KEY = 'atmosiq_deleted_alert_ids';
+
+function getDeletedAlertIds() {
+  try {
+    const raw = localStorage.getItem(DELETED_ALERTS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function storeDeletedAlertId(id) {
+  const set = getDeletedAlertIds();
+  set.add(String(id));
+  localStorage.setItem(DELETED_ALERTS_KEY, JSON.stringify([...set]));
+}
+
+function aggregateLatestForNodes(nodeList = [], latestByNode = {}) {
+  const readings = nodeList.map((n) => latestByNode[n.id]).filter(Boolean);
+  if (!readings.length) return null;
+
+  const avg = (field) => {
+    const vals = readings.map((r) => Number(r[field])).filter((v) => !Number.isNaN(v));
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+  };
+  const max = (field) => {
+    const vals = readings.map((r) => Number(r[field])).filter((v) => !Number.isNaN(v));
+    return vals.length ? Math.max(...vals) : null;
+  };
+
+  const latestTs = Math.max(...readings.map((r) => Number(r.timestamp || 0)));
+  const sample = readings.find((r) => Number(r.timestamp || 0) === latestTs) || readings[0];
+
+  return {
+    ...sample,
+    temperature: avg('temperature'),
+    humidity: avg('humidity'),
+    pressure: avg('pressure'),
+    rain_level: avg('rain_level'),
+    luminosity: avg('luminosity'),
+    wind_speed: max('wind_speed'),
+    flood_risk: max('flood_risk'),
+    storm_risk: max('storm_risk'),
+    overall_risk: max('overall_risk'),
+    aqi: avg('aqi'),
+    timestamp: latestTs,
+    condition_label: 'Synthèse réseau',
+  };
+}
 
 export default function App() {
   const [page,          setPage]          = useState('dashboard');
@@ -43,6 +92,7 @@ export default function App() {
   const [historyByNode, setHistoryByNode] = useState({});
   const [latestByNode,  setLatestByNode]  = useState({});
   const [summary,       setSummary]       = useState({});
+  const [availableRegions, setAvailableRegions] = useState([]);
 
   const wsRef = useRef(null);
 
@@ -60,7 +110,7 @@ export default function App() {
   const loadAllData = useCallback(async (silent = false) => {
     if (!silent) setIsRefreshing(true);
     try {
-      const [nodesRes, sensorRes, latestRes, alertsRes, predsRes, summaryRes, aiRes] =
+      const [nodesRes, sensorRes, latestRes, alertsRes, predsRes, summaryRes, aiRes, geoRegionsRes] =
         await Promise.allSettled([
           fetchApi('/nodes'),
           fetchApi('/sensor-data?limit=2000'),
@@ -69,6 +119,7 @@ export default function App() {
           fetchApi('/predictions'),
           fetchApi('/dashboard/summary'),
           fetchApi('/ai/metrics'),
+          fetchApi('/geography/regions'),
         ]);
 
       if (nodesRes.status === 'fulfilled')
@@ -86,8 +137,11 @@ export default function App() {
         setLatestByNode(lmap);
       }
 
-      if (alertsRes.status === 'fulfilled')
-        setAlerts(alertsRes.value.data || []);
+      if (alertsRes.status === 'fulfilled') {
+        const deleted = getDeletedAlertIds();
+        const rows = (alertsRes.value.data || []).filter((a) => !deleted.has(String(a.id)));
+        setAlerts(rows);
+      }
 
       if (predsRes.status === 'fulfilled')
         setPredictions(predsRes.value.data || []);
@@ -97,6 +151,9 @@ export default function App() {
 
       if (aiRes.status === 'fulfilled')
         setAiMetrics(aiRes.value.data || null);
+
+      if (geoRegionsRes.status === 'fulfilled')
+        setAvailableRegions(Array.isArray(geoRegionsRes.value.data) ? geoRegionsRes.value.data : []);
 
       setError('');
       setLastUpdated(Date.now());
@@ -145,6 +202,7 @@ export default function App() {
 
           if (msg.event === 'alert' && msg.data?.id) {
             setAlerts((prev) => {
+              if (getDeletedAlertIds().has(String(msg.data.id))) return prev;
               if (prev.some((a) => a.id === msg.data.id)) return prev;
               return [msg.data, ...prev];
             });
@@ -212,9 +270,15 @@ export default function App() {
 
   const deleteAlert = useCallback(async (id) => {
     try {
-      await fetchApi(`/alerts/${id}`, { method: 'DELETE' });
+      await fetchApi(`/alerts/${encodeURIComponent(String(id))}`, { method: 'DELETE' });
       setAlerts((prev) => prev.filter((a) => a.id !== id));
     } catch (e) {
+      // Fallback: certains backends actifs n'exposent pas DELETE /api/alerts/:id.
+      if (/Route not found: DELETE \/api\/alerts\//i.test(String(e.message || ''))) {
+        storeDeletedAlertId(id);
+        setAlerts((prev) => prev.filter((a) => a.id !== id));
+        return;
+      }
       setError(e.message);
     }
   }, []);
@@ -223,7 +287,10 @@ export default function App() {
   const allHistory     = Object.values(historyByNode).flat();
 
   // Régions disponibles (liste unique triée)
-  const regions = [...new Set(nodes.map((n) => n.region).filter(Boolean))].sort();
+  const regions = [...new Set([
+    ...availableRegions,
+    ...nodes.map((n) => n.region).filter(Boolean),
+  ])].sort((a, b) => String(a).localeCompare(String(b), 'fr', { sensitivity: 'base' }));
 
   // Nodes filtrés par la région sélectionnée
   const filteredNodes = regionFilter
@@ -235,6 +302,9 @@ export default function App() {
   const displayHistory = filteredIds
     ? allHistory.filter((r) => filteredIds.has(r.node_id))
     : allHistory;
+
+  // Vue globale pour le tableau de bord (aperçu général réseau)
+  const dashboardLiveData = aggregateLatestForNodes(nodes, latestByNode);
 
   // Station principale et live data (respect du filtre régional)
   const primaryNodeId  = filteredNodes.find((n) => n.status === 'online')?.id || filteredNodes[0]?.id;
@@ -282,11 +352,11 @@ export default function App() {
       case 'dashboard':
         return (
           <DashboardPage
-            liveData={liveData}
-            history={displayHistory}
+            liveData={dashboardLiveData}
+            history={allHistory}
             alerts={alerts}
             summary={summary}
-            nodes={filteredNodes}
+            nodes={nodes}
             onNav={setPage}
           />
         );
@@ -297,6 +367,8 @@ export default function App() {
             historyByNode={historyByNode}
             latestByNode={latestByNode}
             predictions={predictions}
+            regionFilter={regionFilter}
+            onRegionChange={setRegionFilter}
           />
         );
       case 'forecast':
@@ -342,15 +414,7 @@ export default function App() {
             latestByNode={latestByNode}
             historyByNode={historyByNode}
             onNav={setPage}
-          />
-        );
-      case 'regions':
-        return (
-          <RegionsPage
-            nodes={nodes}
-            latestByNode={latestByNode}
-            regionFilter={regionFilter}
-            onRegionChange={setRegionFilter}
+            onNodeChange={() => loadAllData()}
           />
         );
       case 'comparison':
@@ -362,13 +426,8 @@ export default function App() {
           />
         );
       case 'stations':
-        return (
-          <StationsPage
-            nodes={nodes}
-            latestByNode={latestByNode}
-            onNodeChange={() => loadAllData()}
-          />
-        );
+        setPage('map');
+        return null;
       default:
         return null;
     }

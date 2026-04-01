@@ -218,8 +218,8 @@ export default function ForecastPage({ predictions = [], aiMetrics, history = []
           <div className="grid-2">
             <div className="card">
               <div className="card-header">
-                <span className="card-title">Modèle TinyML (Détection anomalies)</span>
-                <span className="badge badge-blue">Embarqué ESP32</span>
+                <span className="card-title">Détection anomalies</span>
+                {/* <span className="badge badge-blue">Embarqué ESP32</span> */}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <ModelGauge label="Précision"     value={aiMetrics.tinyml?.accuracy} color="var(--accent)" />
@@ -243,8 +243,8 @@ export default function ForecastPage({ predictions = [], aiMetrics, history = []
 
             <div className="card">
               <div className="card-header">
-                <span className="card-title">Modèle LSTM (Prévisions)</span>
-                <span className="badge badge-green">Serveur</span>
+                <span className="card-title">Prévisions</span>
+                {/* <span className="badge badge-green">Serveur</span> */}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <ModelGauge label="MAE Température" value={aiMetrics.lstm?.mae_temperature ? 1 - (aiMetrics.lstm.mae_temperature / 10) : null} color="#f97316" />

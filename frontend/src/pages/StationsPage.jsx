@@ -144,7 +144,7 @@ export default function StationsPage({ nodes = [], latestByNode = {}, onNodeChan
     <div>
       <div className="page-header">
         <div>
-          <div className="page-title">Stations IoT</div>
+          <div className="page-title"><Stations></Stations></div>
           <div className="page-subtitle">
             {onlineNodes} en ligne · {offlineNodes} hors ligne · {nodes.length} total
           </div>

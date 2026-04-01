@@ -6,15 +6,14 @@ const NAV_ITEMS = [
     items: [
       { id: 'dashboard',    label: 'Tableau de bord',    icon: 'dashboard' },
       { id: 'live',         label: 'Météo en direct',    icon: 'weather' },
-      { id: 'regions',      label: 'Régions de CI',       icon: 'map' },
-      { id: 'map',          label: 'Carte des stations',  icon: 'stations' },
+      { id: 'map',          label: 'Station',          icon: 'stations' },
     ],
   },
   {
     section: 'Analyse & Prévisions',
     items: [
-      { id: 'forecast',     label: 'Prévisions IA',     icon: 'forecast' },
-      { id: 'comparison',   label: 'Comparaison',       icon: 'compare' },
+      { id: 'forecast',     label: 'Prévisions',     icon: 'forecast' },
+      // { id: 'comparison',   label: 'Comparaison',       icon: 'compare' },
       // { id: 'air-quality',  label: 'Qualité de l\'air', icon: 'air-quality' },
       { id: 'history',      label: 'Historique',        icon: 'history' },
     ],
@@ -23,7 +22,6 @@ const NAV_ITEMS = [
     section: 'Gestion',
     items: [
       { id: 'alerts',       label: 'Alertes & Risques', icon: 'alerts', badge: true },
-      { id: 'stations',     label: 'Stations IoT',      icon: 'stations' },
     ],
   },
 ];
@@ -46,7 +44,7 @@ const Sidebar = ({ page, onNav, wsStatus, alertCount = 0 }) => {
           </div>
           <div>
             <div className="sidebar-brand-name">YATANAN</div>
-            <div className="sidebar-brand-sub">MétéoAI</div>
+            <div className="sidebar-brand-sub">Météo</div>
           </div>
         </div>
 
@@ -81,12 +79,12 @@ const Sidebar = ({ page, onNav, wsStatus, alertCount = 0 }) => {
       {/* Footer */}
       <div className="sidebar-footer">
         <div>Projet Fablab — IoT Météo</div>
-        <div className="sidebar-tags">
+        {/* <div className="sidebar-tags">
           <span className="sidebar-tag">ESP32</span>
           <span className="sidebar-tag">TinyML</span>
           <span className="sidebar-tag">LSTM</span>
           <span className="sidebar-tag">MQTT</span>
-        </div>
+        </div> */}
       </div>
     </aside>
   );

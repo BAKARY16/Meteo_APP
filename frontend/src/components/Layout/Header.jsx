@@ -2,11 +2,10 @@ import Icon from '../ui/Icon';
 
 const PAGE_META = {
   dashboard:    { title: 'Tableau de bord',         subtitle: 'Vue d\'ensemble en temps réel' },
-  live:         { title: 'Météo en direct',         subtitle: 'Données capteurs live par station' },
+  live:         { title: 'Météo en direct',         subtitle: 'Live + prévisions + analyse régionale' },
   map:          { title: 'Carte des Stations',      subtitle: 'Visualisation géographique et données GPS en temps réel' },
-  regions:      { title: 'Météo par Région',        subtitle: "Couverture nationale · Côte d'Ivoire · Cliquez une région pour la filtrer" },
   forecast:     { title: 'Prévisions IA',           subtitle: 'Prédictions LSTM · 3h · 6h · 12h · 24h' },
-  comparison:   { title: 'Comparaison',             subtitle: 'Analyse comparative inter-stations' },
+  // comparison:   { title: 'Comparaison',             subtitle: 'Analyse comparative inter-stations' },
   'air-quality':{ title: 'Qualité de l\'air',       subtitle: 'Indice de confort et qualité environnementale' },
   history:      { title: 'Historique',              subtitle: 'Analyse des données historiques' },
   alerts:       { title: 'Alertes & Risques',       subtitle: 'Centre de surveillance et d\'alertes' },
@@ -75,7 +74,7 @@ const Header = ({ page, onRefresh, isRefreshing, theme, onThemeToggle, lastUpdat
           onClick={onThemeToggle}
           title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
         >
-          <Icon name={theme === 'dark' ? 'sun_alt' : 'moon'} size={16} />
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
         </button>
       </div>
     </header>

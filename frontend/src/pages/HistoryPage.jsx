@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   CartesianGrid, Brush, ResponsiveContainer, Tooltip,
@@ -27,6 +27,79 @@ const METRICS = [
   { key: 'luminosity',    label: 'Luminosité',     unit: 'lux',  color: SENSOR_COLORS.luminosity },
   { key: 'anomaly_score', label: 'Score anomalie', unit: '',     color: SENSOR_COLORS.anomaly_score },
 ];
+
+function cityFromNode(node) {
+  if (!node) return 'Ville inconnue';
+  const loc = String(node.location || '').trim();
+  if (!loc) return String(node.name || 'Ville inconnue');
+  return loc.split(',')[0].trim() || loc;
+}
+
+function buildCityOptions(nodes = []) {
+  const map = {};
+  nodes.forEach((n) => {
+    const city = cityFromNode(n);
+    const region = n.region || 'Non définie';
+    const key = `${region}::${city}`;
+    if (!map[key]) {
+      map[key] = { key, city, region, nodeIds: [] };
+    }
+    map[key].nodeIds.push(n.id);
+  });
+
+  return Object.values(map).sort((a, b) => {
+    const byRegion = a.region.localeCompare(b.region, 'fr', { sensitivity: 'base' });
+    if (byRegion !== 0) return byRegion;
+    return a.city.localeCompare(b.city, 'fr', { sensitivity: 'base' });
+  });
+}
+
+function aggregateCityHistory(nodeIds = [], historyByNode = {}) {
+  const metrics = ['temperature', 'humidity', 'pressure', 'wind_speed', 'rain_level', 'luminosity'];
+  const buckets = {};
+
+  nodeIds.forEach((id) => {
+    (historyByNode[id] || []).forEach((r) => {
+      const tsNum = Number(r.timestamp || 0);
+      if (!tsNum) return;
+      const bucketTs = Math.floor(tsNum / 300) * 300;
+      if (!buckets[bucketTs]) {
+        buckets[bucketTs] = {
+          timestamp: bucketTs,
+          values: Object.fromEntries(metrics.map((m) => [m, []])),
+          anomalyScores: [],
+          isAnomaly: false,
+        };
+      }
+
+      const bucket = buckets[bucketTs];
+      metrics.forEach((m) => {
+        const val = r[m];
+        if (val != null && !Number.isNaN(Number(val))) bucket.values[m].push(Number(val));
+      });
+      if (r.anomaly_score != null && !Number.isNaN(Number(r.anomaly_score))) {
+        bucket.anomalyScores.push(Number(r.anomaly_score));
+      }
+      bucket.isAnomaly = bucket.isAnomaly || Boolean(r.is_anomaly);
+    });
+  });
+
+  const avg = (arr) => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null);
+
+  return Object.values(buckets)
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((b) => ({
+      timestamp: b.timestamp,
+      temperature: avg(b.values.temperature),
+      humidity: avg(b.values.humidity),
+      pressure: avg(b.values.pressure),
+      wind_speed: avg(b.values.wind_speed),
+      rain_level: avg(b.values.rain_level),
+      luminosity: avg(b.values.luminosity),
+      anomaly_score: b.anomalyScores.length ? Math.max(...b.anomalyScores) : null,
+      is_anomaly: b.isAnomaly,
+    }));
+}
 
 // ── Heatmap ───────────────────────────────────────────────────────────────────
 function heatColor(t) {
@@ -155,15 +228,29 @@ function exportJSON(rows, nodeId) {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 export default function HistoryPage({ nodes = [], historyByNode = {}, latestByNode = {} }) {
-  const [selectedNodeId,   setSelectedNodeId]   = useState(nodes[0]?.id || '');
+  const [selectedCityKey,  setSelectedCityKey]  = useState('');
   const [period,           setPeriod]           = useState(24);
   const [selectedMetrics,  setSelectedMetrics]  = useState(['temperature', 'humidity']);
   const [chartType,        setChartType]        = useState('line');
   const [exportOpen,       setExportOpen]       = useState(false);
 
-  const nodeId      = selectedNodeId || nodes[0]?.id;
-  const currentNode = nodes.find((n) => n.id === nodeId);
-  const history     = nodeId ? (historyByNode[nodeId] || []) : [];
+  const cityOptions = useMemo(() => buildCityOptions(nodes), [nodes]);
+
+  useEffect(() => {
+    if (!cityOptions.length) {
+      setSelectedCityKey('');
+      return;
+    }
+    if (!selectedCityKey || !cityOptions.some((c) => c.key === selectedCityKey)) {
+      setSelectedCityKey(cityOptions[0].key);
+    }
+  }, [cityOptions, selectedCityKey]);
+
+  const selectedCity = cityOptions.find((c) => c.key === selectedCityKey) || cityOptions[0] || null;
+  const history = useMemo(
+    () => aggregateCityHistory(selectedCity?.nodeIds || [], historyByNode),
+    [selectedCity, historyByNode]
+  );
 
   const cutoff   = Date.now() / 1000 - period * 3600;
   const filtered = useMemo(() => history.filter((r) => r.timestamp >= cutoff), [history, cutoff]);
@@ -218,6 +305,7 @@ export default function HistoryPage({ nodes = [], historyByNode = {}, latestByNo
 
   const periodStart = filtered.length ? tsDate(filtered[0].timestamp) : null;
   const periodEnd   = filtered.length ? tsDate(filtered[filtered.length - 1].timestamp) : null;
+  const exportId = (selectedCity?.key || 'ville').replace(/[^a-zA-Z0-9-_]+/g, '_');
 
   return (
     <div>
@@ -227,17 +315,19 @@ export default function HistoryPage({ nodes = [], historyByNode = {}, latestByNo
         <div>
           <div className="page-title">Historique</div>
           <div className="page-subtitle">
-            {currentNode?.name || '—'}
+            {selectedCity ? `${selectedCity.city} · ${selectedCity.region}` : '—'}
             {periodStart && ` · du ${periodStart} au ${periodEnd}`}
           </div>
         </div>
         <div className="page-header-right">
           <select
             className="select"
-            value={selectedNodeId}
-            onChange={(e) => setSelectedNodeId(e.target.value)}
+            value={selectedCityKey}
+            onChange={(e) => setSelectedCityKey(e.target.value)}
           >
-            {nodes.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+            {cityOptions.map((c) => (
+              <option key={c.key} value={c.key}>{c.city} · {c.region}</option>
+            ))}
           </select>
           <div className="tabs">
             {PERIODS.map(({ value, label }) => (
@@ -267,19 +357,19 @@ export default function HistoryPage({ nodes = [], historyByNode = {}, latestByNo
                 zIndex: 50, minWidth: 160, padding: 6,
               }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', padding: '4px 10px 6px', fontWeight: 600 }}>
-                  {filtered.length} mesures · {currentNode?.name || nodeId}
+                  {filtered.length} mesures · {selectedCity ? `${selectedCity.city} (${selectedCity.region})` : '—'}
                 </div>
                 <button
                   className="btn btn-ghost"
                   style={{ width: '100%', textAlign: 'left', fontSize: 12, padding: '7px 12px', borderRadius: 7 }}
-                  onClick={() => { exportCSV(filtered, nodeId); setExportOpen(false); }}
+                  onClick={() => { exportCSV(filtered, exportId); setExportOpen(false); }}
                 >
                   Exporter en CSV
                 </button>
                 <button
                   className="btn btn-ghost"
                   style={{ width: '100%', textAlign: 'left', fontSize: 12, padding: '7px 12px', borderRadius: 7 }}
-                  onClick={() => { exportJSON(filtered, nodeId); setExportOpen(false); }}
+                  onClick={() => { exportJSON(filtered, exportId); setExportOpen(false); }}
                 >
                   Exporter en JSON
                 </button>
@@ -463,7 +553,8 @@ export default function HistoryPage({ nodes = [], historyByNode = {}, latestByNo
                 {METRICS.map(({ key, label, unit, color }) => {
                   const s     = stats[key];
                   const trend = trendArrow(filtered, key);
-                  if (!s || s.count === 0) return null;
+                  const count = filtered.filter((r) => r[key] != null && !Number.isNaN(Number(r[key]))).length;
+                  if (!s || count === 0) return null;
                   return (
                     <tr key={key}>
                       <td>
@@ -485,7 +576,7 @@ export default function HistoryPage({ nodes = [], historyByNode = {}, latestByNo
                         {s.last != null ? `${fmt(s.last)} ${unit}` : '—'}
                       </td>
                       <td className="mono" style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
-                        {s.count}
+                        {count}
                       </td>
                       <td style={{ textAlign: 'center' }}>
                         <span style={{

@@ -9,6 +9,7 @@ import {
   tsDate, timeAgo,
   riskLevel, getRecommendations, fmt,
 } from '../utils/helpers';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const STEP_SIZE = 10;
@@ -144,7 +145,8 @@ export default function AlertsPage({
   const [search,        setSearch]        = useState('');
   const [step,          setStep]          = useState(0);
   const [expandId,      setExpandId]      = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null); // id awaiting 2nd-click confirm
+  const [deleteTarget,  setDeleteTarget]  = useState(null);
+  const [deleting,      setDeleting]      = useState(false);
 
   // Build derived sets
   const primaryNodeId = Object.keys(latestByNode)[0];
@@ -187,16 +189,15 @@ export default function AlertsPage({
     alerts.filter((a) => !a.acknowledged).forEach((a) => onAcknowledge?.(a.id));
   };
 
-  const handleDelete = (e, id) => {
-    e.stopPropagation();
-    if (confirmDelete === id) {
-      onDelete?.(id);
-      setConfirmDelete(null);
-      if (expandId === id) setExpandId(null);
-    } else {
-      setConfirmDelete(id);
-      // Auto-cancel after 3 s
-      setTimeout(() => setConfirmDelete((c) => (c === id ? null : c)), 3000);
+  const handleDelete = async () => {
+    if (!deleteTarget?.id || !onDelete) return;
+    setDeleting(true);
+    try {
+      await onDelete(deleteTarget.id);
+      if (expandId === deleteTarget.id) setExpandId(null);
+      setDeleteTarget(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -361,7 +362,6 @@ export default function AlertsPage({
                 const color    = a.acknowledged ? '#22c55e' : sev.color;
                 const SevIc    = sev.Ic;
                 const isExpanded      = expandId === a.id;
-                const isPendingDelete = confirmDelete === a.id;
                 const latest   = node ? latestByNode[node.id] : null;
 
                 return (
@@ -456,14 +456,14 @@ export default function AlertsPage({
                         {/* Delete (2-click confirm) */}
                         {onDelete && (
                           <button
-                            title={isPendingDelete ? 'Cliquer à nouveau pour confirmer' : 'Supprimer'}
-                            onClick={(e) => handleDelete(e, a.id)}
+                            title="Supprimer"
+                            onClick={() => setDeleteTarget({ id: a.id, type: a.type, nodeId: a.node_id })}
                             style={{
-                              width: isPendingDelete ? 'auto' : 28,
-                              padding: isPendingDelete ? '0 10px' : 0,
+                              width: 28,
+                              padding: 0,
                               height: 28, borderRadius: 6,
-                              border: `1px solid ${isPendingDelete ? 'rgba(220,38,38,.5)' : 'rgba(220,38,38,.2)'}`,
-                              background: isPendingDelete ? 'rgba(220,38,38,.18)' : 'rgba(220,38,38,.08)',
+                              border: '1px solid rgba(220,38,38,.2)',
+                              background: 'rgba(220,38,38,.08)',
                               color: '#dc2626', cursor: 'pointer',
                               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
                               fontSize: 11, fontWeight: 600,
@@ -471,7 +471,6 @@ export default function AlertsPage({
                             }}
                           >
                             <Trash2 size={13} strokeWidth={2} />
-                            {isPendingDelete && <span>Confirmer?</span>}
                           </button>
                         )}
                       </div>
@@ -595,6 +594,17 @@ export default function AlertsPage({
           </>
         )}
       </div>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Supprimer l'alerte"
+          message={`Voulez-vous vraiment supprimer l'alerte « ${TYPE_LABELS[deleteTarget.type] || deleteTarget.type} » pour ${deleteTarget.nodeId} ?`}
+          confirmLabel="Supprimer"
+          loading={deleting}
+          onConfirm={handleDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }
